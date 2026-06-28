@@ -23,6 +23,12 @@ const INITIAL_STATE: BandState = {
   style: 'EDM',
   isPlaying: false,
   scale: 'pentatonic',
+  keyRoot: 0,
+};
+
+const NOTE_OFFSETS: Record<string, number> = {
+  'C': 0, 'C#': 1, 'D': 2, 'D#': 3, 'E': 4, 'F': 5,
+  'F#': 6, 'G': 7, 'G#': 8, 'A': 9, 'A#': 10, 'B': 11,
 };
 
 interface ChartPoint { t: number; chaos: number; density: number; }
@@ -210,7 +216,14 @@ export default function App() {
       setMicActive(true);
       micPollRef.current = window.setInterval(() => {
         const hz = micRef.current?.detectPitch();
-        if (hz != null) setDetectedKey(MicDetector.freqToNote(hz));
+        if (hz != null) {
+          const note = MicDetector.freqToNote(hz);
+          setDetectedKey(note);
+          const offset = NOTE_OFFSETS[note];
+          if (offset !== undefined && offset !== stateRef.current.keyRoot) {
+            updateState({ keyRoot: offset });
+          }
+        }
       }, 200);
     }
   };
@@ -263,7 +276,10 @@ export default function App() {
         <div className="text-[10px] text-[#4a5a7a]">BPM <span className="text-[#22d3ee]">{state.bpm}</span></div>
         <div className="text-[10px] text-[#4a5a7a]">CHAOS <span className="text-[#22d3ee]">{Math.round(state.chaos * 100)}%</span></div>
         {detectedKey && (
-          <div className="text-[10px] text-[#f97316]">KEY <span className="text-[#f97316] font-bold">{detectedKey}</span></div>
+          <div className="text-[10px] text-[#f97316]">
+            KEY <span className="text-[#f97316] font-bold">{detectedKey}</span>
+            <span className="text-[#f97316]/50 ml-1">→ band locked</span>
+          </div>
         )}
         <div className="ml-auto flex items-center gap-3 text-[10px] text-[#4a5a7a]">
           <span>XP {xp}</span>

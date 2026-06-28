@@ -8,6 +8,7 @@ export interface BandState {
   style: MusicStyle;
   isPlaying: boolean;
   scale: string;
+  keyRoot: number; // 0=C 1=C# 2=D … 11=B — transpose offset applied to all notes
 }
 
 export interface AudioEvent {

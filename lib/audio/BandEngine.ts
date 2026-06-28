@@ -72,7 +72,7 @@ export class BandEngine {
 
     const chosen  = this.voiceLead(candidates, this.lastBassMidi, 36);
     const octShift = Math.random() < 0.12 ? -12 : 0; // occasional octave drop
-    const midi    = 36 + chosen + octShift;
+    const midi    = 36 + chosen + (state.keyRoot ?? 0) + octShift;
     this.lastBassMidi = midi;
 
     const freq = this.midiToFreq(midi);
@@ -122,7 +122,7 @@ export class BandEngine {
 
     // At slow BPMs, occasionally play a longer note phrase (double duration)
     const octaveBase = Math.random() < 0.25 ? 72 : 60;
-    const freq  = this.midiToFreq(octaveBase + semitone);
+    const freq  = this.midiToFreq(octaveBase + semitone + (state.keyRoot ?? 0));
     const durMult = (slowFill > 0.4 && Math.random() < 0.3) ? 1.8 : 1.0;
     const dur   = (0.1 + Math.random() * 0.22) * durMult;
 
