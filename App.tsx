@@ -4,12 +4,13 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Play, Pause, Music, Zap, Layers, Activity, Disc, Radio, Globe } from 'lucide-react';
+import { Play, Pause, Music, Zap, Layers, Activity, Disc, Radio, Globe, Mic, MicOff } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts';
 import { Conductor } from './lib/audio/Conductor';
 import { DrumEngine } from './lib/audio/DrumEngine';
 import { BandEngine } from './lib/audio/BandEngine';
+import { MicDetector } from './lib/audio/MicDetector';
 import { ThreeVisualEngine } from './lib/visuals/ThreeVisualEngine';
 import { BandState, MusicStyle } from './lib/audio/types';
 import { supabase } from './lib/supabaseClient';
@@ -33,16 +34,24 @@ export default function App() {
   const [isBooted, setIsBooted] = useState(false);
   const [chartData, setChartData] = useState<ChartPoint[]>([]);
   const [syncHeight, setSyncHeight] = useState(0);
+  const [micActive, setMicActive] = useState(false);
+  const [detectedKey, setDetectedKey] = useState<string | null>(null);
 
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const masterGainRef = useRef<GainNode | null>(null);
-  const conductorRef = useRef<Conductor | null>(null);
-  const drumEngineRef = useRef<DrumEngine | null>(null);
-  const bandEngineRef = useRef<BandEngine | null>(null);
-  const visualEngineRef = useRef<ThreeVisualEngine | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const sessionStartRef = useRef<number>(0);
-  const sessionXpRef    = useRef<number>(0);
+  const audioCtxRef    = useRef<AudioContext | null>(null);
+  const masterGainRef  = useRef<GainNode | null>(null);
+  const conductorRef   = useRef<Conductor | null>(null);
+  const drumEngineRef  = useRef<DrumEngine | null>(null);
+  const bandEngineRef  = useRef<BandEngine | null>(null);
+  const visualEngineRef= useRef<ThreeVisualEngine | null>(null);
+  const canvasRef      = useRef<HTMLCanvasElement | null>(null);
+  const sessionStartRef= useRef<number>(0);
+  const sessionXpRef   = useRef<number>(0);
+  // stateRef keeps conductor callback in sync without re-creating it
+  const stateRef       = useRef<BandState>(INITIAL_STATE);
+  const xpRef          = useRef<number>(0);
+  const micRef         = useRef<MicDetector | null>(null);
+  const micPollRef     = useRef<number>(0);
+  const tapTimesRef    = useRef<number[]>([]);
 
   useEffect(() => {
     supabase.from('sessions').select('*', { count: 'exact', head: true })
@@ -51,23 +60,27 @@ export default function App() {
 
   useEffect(() => {
     const logs = [
-      "INITIALIZING CLUSTER...",
-      "LOADING AUDIO BUFFERS...",
-      "SYNCING 1-BIT BLOCKCHAIN...",
-      "CALIBRATING HARMONY BRAIN...",
-      "ESTABLISHING TEMPORAL GRID...",
-      "READY FOR SPLASHDOWN."
+      'INITIALIZING CLUSTER...',
+      'LOADING AUDIO BUFFERS...',
+      'SYNCING 1-BIT BLOCKCHAIN...',
+      'CALIBRATING HARMONY BRAIN...',
+      'ESTABLISHING TEMPORAL GRID...',
+      'READY FOR SPLASHDOWN.',
     ];
     let i = 0;
-    const interval = setInterval(() => {
+    const iv = setInterval(() => {
       if (i < logs.length) { setBootLog(prev => [...prev, logs[i]]); i++; }
-      else clearInterval(interval);
+      else clearInterval(iv);
     }, 400);
-    return () => clearInterval(interval);
+    return () => clearInterval(iv);
   }, []);
 
   useEffect(() => {
-    return () => { visualEngineRef.current?.dispose(); };
+    return () => {
+      visualEngineRef.current?.dispose();
+      clearInterval(micPollRef.current);
+      micRef.current?.stop();
+    };
   }, []);
 
   const initAudio = () => {
@@ -75,37 +88,45 @@ export default function App() {
 
     const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
     const masterGain = ctx.createGain();
-    masterGain.gain.value = 0.7;
+    masterGain.gain.value = 1.2;
     masterGain.connect(ctx.destination);
 
     const drumEngine = new DrumEngine(ctx, masterGain);
     const bandEngine = new BandEngine(ctx, masterGain);
 
-    const conductor = new Conductor(ctx, state, (step, time) => {
-      const pattern = drumEngine.getPattern(state.style, step);
+    const conductor = new Conductor(ctx, stateRef.current, (step, time) => {
+      const s = stateRef.current;
+
+      // micro-timing humanization: slight random offset scaled by chaos
+      const jitter = (Math.random() - 0.5) * 0.006 * s.chaos;
+      const t = time + jitter;
+
+      const pattern = drumEngine.getPattern(s.style, step, s.chaos);
 
       if (pattern.kick) {
-        drumEngine.playKick(time, pattern.kick);
+        drumEngine.playKick(t, pattern.kick);
         visualEngineRef.current?.addPulse('#ef4444');
       }
       if (pattern.snare) {
-        drumEngine.playSnare(time, pattern.snare);
+        drumEngine.playSnare(t, pattern.snare);
         visualEngineRef.current?.addPulse('#f59e0b');
       }
       if (pattern.hihat) {
-        drumEngine.playHiHat(time, pattern.hihat, step % 8 === 7);
+        drumEngine.playHiHat(t, pattern.hihat, step % 8 === 7);
         visualEngineRef.current?.addPulse('#22d3ee');
       }
 
-      bandEngine.playBass(time, state, step);
-      bandEngine.playLead(time, state, step);
+      bandEngine.playBass(t, s, step);
+      bandEngine.playLead(t, s, step);
 
-      setXp(prev => prev + Math.floor(state.density * 0.1 + state.chaos * 5));
+      const earned = Math.floor(s.density * 0.1 + s.chaos * 5);
+      xpRef.current += earned;
+      setXp(xpRef.current);
 
       if (step % 4 === 0) {
         setChartData(prev => [
           ...prev.slice(-32),
-          { t: prev.length, chaos: Math.round(state.chaos * 100), density: state.density },
+          { t: prev.length, chaos: Math.round(s.chaos * 100), density: s.density },
         ]);
       }
     });
@@ -114,10 +135,10 @@ export default function App() {
     masterGainRef.current = masterGain;
     drumEngineRef.current = drumEngine;
     bandEngineRef.current = bandEngine;
-    conductorRef.current = conductor;
+    conductorRef.current  = conductor;
 
     if (canvasRef.current) {
-      visualEngineRef.current = new ThreeVisualEngine(canvasRef.current, state);
+      visualEngineRef.current = new ThreeVisualEngine(canvasRef.current, stateRef.current);
     }
 
     setIsBooted(true);
@@ -125,43 +146,81 @@ export default function App() {
 
   const togglePlay = () => {
     if (!isBooted) { initAudio(); return; }
-    if (state.isPlaying) {
+    if (stateRef.current.isPlaying) {
       conductorRef.current?.stop();
       const duration = Math.floor((Date.now() - sessionStartRef.current) / 1000);
       supabase.from('sessions').insert({
-        style: state.style,
-        scale: state.scale,
-        bpm: state.bpm,
-        swing: state.swing,
-        chaos: Number(state.chaos.toFixed(3)),
-        density: state.density,
-        xp_earned: xp - sessionXpRef.current,
+        style:            stateRef.current.style,
+        scale:            stateRef.current.scale,
+        bpm:              stateRef.current.bpm,
+        swing:            stateRef.current.swing,
+        chaos:            Number(stateRef.current.chaos.toFixed(3)),
+        density:          stateRef.current.density,
+        xp_earned:        xpRef.current - sessionXpRef.current,
         duration_seconds: duration,
       }).then(({ error }) => {
         if (!error) setSyncHeight(h => h + 1);
       });
     } else {
       sessionStartRef.current = Date.now();
-      sessionXpRef.current = xp;
+      sessionXpRef.current = xpRef.current;
       if (audioCtxRef.current?.state === 'suspended') audioCtxRef.current.resume();
       conductorRef.current?.start();
     }
-    setState(prev => ({ ...prev, isPlaying: !prev.isPlaying }));
+    setState(prev => {
+      const next = { ...prev, isPlaying: !prev.isPlaying };
+      stateRef.current = next;
+      return next;
+    });
   };
 
   const updateState = (updates: Partial<BandState>) => {
-    const newState = { ...state, ...updates };
-    setState(newState);
-    conductorRef.current?.updateState(newState);
-    visualEngineRef.current?.updateState(newState);
+    setState(prev => {
+      const next = { ...prev, ...updates };
+      stateRef.current = next;
+      conductorRef.current?.updateState(next);
+      visualEngineRef.current?.updateState(next);
+      return next;
+    });
+  };
+
+  const tapTempo = () => {
+    const now = Date.now();
+    tapTimesRef.current = [...tapTimesRef.current.slice(-7), now];
+    if (tapTimesRef.current.length >= 2) {
+      const intervals = tapTimesRef.current
+        .slice(1)
+        .map((t, i) => t - tapTimesRef.current[i]);
+      const avg = intervals.reduce((a, b) => a + b) / intervals.length;
+      const bpm = Math.round(60000 / avg);
+      if (bpm >= 60 && bpm <= 200) updateState({ bpm });
+    }
+  };
+
+  const toggleMic = async () => {
+    if (!audioCtxRef.current) return;
+    if (micActive) {
+      micRef.current?.stop();
+      clearInterval(micPollRef.current);
+      setMicActive(false);
+      setDetectedKey(null);
+    } else {
+      if (!micRef.current) micRef.current = new MicDetector(audioCtxRef.current);
+      await micRef.current.start();
+      setMicActive(true);
+      micPollRef.current = window.setInterval(() => {
+        const hz = micRef.current?.detectPitch();
+        if (hz != null) setDetectedKey(MicDetector.freqToNote(hz));
+      }, 200);
+    }
   };
 
   const styles: { id: MusicStyle; label: string; color: string; icon: any }[] = [
-    { id: 'EDM',    label: 'EDM',     color: '#22d3ee', icon: Disc },
-    { id: 'HipHop', label: 'Hip-Hop', color: '#8b5cf6', icon: Radio },
-    { id: 'Jazz',   label: 'Jazz',    color: '#f59e0b', icon: Music },
-    { id: 'African',label: 'African', color: '#ef4444', icon: Globe },
-    { id: 'Indian', label: 'Indian',  color: '#f97316', icon: Activity },
+    { id: 'EDM',    label: 'EDM',    color: '#22d3ee', icon: Disc },
+    { id: 'HipHop', label: 'Hip-Hop',color: '#8b5cf6', icon: Radio },
+    { id: 'Jazz',   label: 'Jazz',   color: '#f59e0b', icon: Music },
+    { id: 'African',label: 'African',color: '#ef4444', icon: Globe },
+    { id: 'Indian', label: 'Indian', color: '#f97316', icon: Activity },
   ];
 
   return (
@@ -203,7 +262,9 @@ export default function App() {
         <div className="text-[10px] text-[#22d3ee] tracking-tighter uppercase">{state.style}</div>
         <div className="text-[10px] text-[#4a5a7a]">BPM <span className="text-[#22d3ee]">{state.bpm}</span></div>
         <div className="text-[10px] text-[#4a5a7a]">CHAOS <span className="text-[#22d3ee]">{Math.round(state.chaos * 100)}%</span></div>
-
+        {detectedKey && (
+          <div className="text-[10px] text-[#f97316]">KEY <span className="text-[#f97316] font-bold">{detectedKey}</span></div>
+        )}
         <div className="ml-auto flex items-center gap-3 text-[10px] text-[#4a5a7a]">
           <span>XP {xp}</span>
           <div className="w-20 h-1.5 bg-[#1a2540] rounded-full overflow-hidden">
@@ -325,6 +386,9 @@ export default function App() {
               <div>{`> HARMONY_LOCK: ${state.scale.toUpperCase()}`}</div>
               <div>{`> PARTICLES: 1400`}</div>
               <div className="text-[#22d3ee]/50">{`> BPM_CLOCK: ${state.bpm}`}</div>
+              {detectedKey && (
+                <div className="text-[#f97316]">{`> MIC_KEY: ${detectedKey}`}</div>
+              )}
             </div>
           </div>
 
@@ -348,23 +412,45 @@ export default function App() {
       </main>
 
       {/* Bottom Controls */}
-      <footer className="h-24 bg-[#0a0f1e] border-t border-[#1a2540] flex items-center px-4 gap-6 z-50">
-        <ControlSlider label="BPM"    value={state.bpm}                  min={60}  max={200} onChange={v => updateState({ bpm: v })} />
+      <footer className="h-24 bg-[#0a0f1e] border-t border-[#1a2540] flex items-center px-4 gap-4 z-50">
+        <ControlSlider label="BPM"     value={state.bpm}                     min={60}  max={200} onChange={v => updateState({ bpm: v })} />
         <div className="w-[1px] h-10 bg-[#1a2540]" />
-        <ControlSlider label="Swing"  value={state.swing}                min={0}   max={100} unit="%" onChange={v => updateState({ swing: v })} />
+        <ControlSlider label="Swing"   value={state.swing}                   min={0}   max={100} unit="%" onChange={v => updateState({ swing: v })} />
         <div className="w-[1px] h-10 bg-[#1a2540]" />
-        <ControlSlider label="Chaos"  value={Math.round(state.chaos * 100)} min={0} max={100} unit="%" onChange={v => updateState({ chaos: v / 100 })} />
+        <ControlSlider label="Chaos"   value={Math.round(state.chaos * 100)} min={0}   max={100} unit="%" onChange={v => updateState({ chaos: v / 100 })} />
         <div className="w-[1px] h-10 bg-[#1a2540]" />
-        <ControlSlider label="Density" value={state.density}             min={0}   max={100} onChange={v => updateState({ density: v })} />
+        <ControlSlider label="Density" value={state.density}                 min={0}   max={100} onChange={v => updateState({ density: v })} />
         <div className="w-[1px] h-10 bg-[#1a2540]" />
-        <div className="px-4">
+
+        <div className="flex flex-col gap-1.5 items-center">
           <button
             onClick={togglePlay}
-            className="px-8 py-2.5 border-2 border-[#22d3ee] text-[#22d3ee] font-bold tracking-widest rounded hover:bg-[#22d3ee]/10 transition-all flex items-center gap-2"
+            className="px-6 py-2 border-2 border-[#22d3ee] text-[#22d3ee] font-bold tracking-widest rounded hover:bg-[#22d3ee]/10 transition-all flex items-center gap-2 text-xs"
           >
-            {state.isPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />}
+            {state.isPlaying ? <Pause size={13} fill="currentColor" /> : <Play size={13} fill="currentColor" />}
             {state.isPlaying ? 'STOP' : 'PLAY'}
           </button>
+          <div className="flex gap-1.5">
+            <button
+              onClick={tapTempo}
+              disabled={!isBooted}
+              className="px-3 py-1 border border-[#1a2540] text-[#4a5a7a] text-[9px] rounded hover:border-[#22d3ee]/50 hover:text-[#22d3ee] transition-all disabled:opacity-30"
+            >
+              TAP
+            </button>
+            <button
+              onClick={toggleMic}
+              disabled={!isBooted}
+              className={`px-2 py-1 border text-[9px] rounded transition-all disabled:opacity-30 flex items-center gap-1 ${
+                micActive
+                  ? 'border-[#f97316] text-[#f97316] bg-[#f97316]/10'
+                  : 'border-[#1a2540] text-[#4a5a7a] hover:border-[#f97316]/50 hover:text-[#f97316]'
+              }`}
+            >
+              {micActive ? <MicOff size={10} /> : <Mic size={10} />}
+              MIC
+            </button>
+          </div>
         </div>
       </footer>
     </div>

@@ -1,4 +1,22 @@
-import { MusicStyle } from './types';
+import { BandState, MusicStyle } from './types';
+
+// Euclidean rhythm: distributes `beats` pulses across `steps` as evenly as possible
+function euclidean(steps: number, beats: number, offset = 0): number[] {
+  const pattern = new Array(steps).fill(0);
+  for (let k = 0; k < beats; k++) {
+    pattern[Math.floor(k * steps / beats)] = 1;
+  }
+  const off = ((offset % steps) + steps) % steps;
+  return [...pattern.slice(steps - off), ...pattern.slice(0, steps - off)];
+}
+
+const RHYTHMS: Record<MusicStyle, { kick: number[]; snare: number[]; hihat: number[] }> = {
+  EDM:    { kick: euclidean(16, 4),     snare: euclidean(16, 2, 4),  hihat: euclidean(16, 8) },
+  HipHop: { kick: euclidean(16, 5),     snare: euclidean(16, 2, 4),  hihat: euclidean(16, 13) },
+  Jazz:   { kick: euclidean(16, 3),     snare: euclidean(16, 3, 5),  hihat: euclidean(16, 11) },
+  African:{ kick: euclidean(16, 5),     snare: euclidean(16, 3, 2),  hihat: euclidean(16, 11, 1) },
+  Indian: { kick: euclidean(16, 7),     snare: euclidean(16, 5, 3),  hihat: euclidean(16, 9,  1) },
+};
 
 export class DrumEngine {
   private ctx: AudioContext;
@@ -10,125 +28,118 @@ export class DrumEngine {
   }
 
   public playKick(time: number, velocity: number) {
+    // Body: sine sweep with sub weight
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
-
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(160, time);
+    osc.frequency.exponentialRampToValueAtTime(38, time + 0.07);
+    gain.gain.setValueAtTime(velocity * 2.8, time);
+    gain.gain.exponentialRampToValueAtTime(0.001, time + 0.55);
     osc.connect(gain);
     gain.connect(this.masterGain);
-
-    osc.frequency.setValueAtTime(150, time);
-    osc.frequency.exponentialRampToValueAtTime(40, time + 0.1);
-
-    gain.gain.setValueAtTime(velocity, time);
-    gain.gain.exponentialRampToValueAtTime(0.01, time + 0.3);
-
     osc.start(time);
-    osc.stop(time + 0.3);
+    osc.stop(time + 0.55);
+
+    // Click transient for punch
+    const click = this.ctx.createOscillator();
+    const clickGain = this.ctx.createGain();
+    click.type = 'square';
+    click.frequency.setValueAtTime(1400, time);
+    click.frequency.exponentialRampToValueAtTime(60, time + 0.009);
+    clickGain.gain.setValueAtTime(velocity * 0.6, time);
+    clickGain.gain.exponentialRampToValueAtTime(0.001, time + 0.013);
+    click.connect(clickGain);
+    clickGain.connect(this.masterGain);
+    click.start(time);
+    click.stop(time + 0.015);
   }
 
   public playSnare(time: number, velocity: number) {
-    const noise = this.ctx.createBufferSource();
-    const bufferSize = this.ctx.sampleRate * 0.1;
-    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    // Noise: bandpass-filtered for body
+    const bufSize = Math.floor(this.ctx.sampleRate * 0.22);
+    const buffer = this.ctx.createBuffer(1, bufSize, this.ctx.sampleRate);
     const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
 
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = Math.random() * 2 - 1;
-    }
-
+    const noise = this.ctx.createBufferSource();
     noise.buffer = buffer;
-
-    const noiseFilter = this.ctx.createBiquadFilter();
-    noiseFilter.type = 'highpass';
-    noiseFilter.frequency.value = 1000;
-
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 2200;
+    bp.Q.value = 0.7;
     const noiseGain = this.ctx.createGain();
-    noiseGain.gain.setValueAtTime(velocity, time);
-    noiseGain.gain.exponentialRampToValueAtTime(0.01, time + 0.1);
-
-    const osc = this.ctx.createOscillator();
-    const oscGain = this.ctx.createGain();
-
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(180, time);
-    oscGain.gain.setValueAtTime(velocity * 0.5, time);
-    oscGain.gain.exponentialRampToValueAtTime(0.01, time + 0.1);
-
-    noise.connect(noiseFilter);
-    noiseFilter.connect(noiseGain);
+    noiseGain.gain.setValueAtTime(velocity * 1.6, time);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, time + 0.2);
+    noise.connect(bp);
+    bp.connect(noiseGain);
     noiseGain.connect(this.masterGain);
-
-    osc.connect(oscGain);
-    oscGain.connect(this.masterGain);
-
     noise.start(time);
-    osc.start(time);
-    noise.stop(time + 0.1);
-    osc.stop(time + 0.1);
+    noise.stop(time + 0.22);
+
+    // Snap tone
+    const snap = this.ctx.createOscillator();
+    const snapGain = this.ctx.createGain();
+    snap.type = 'triangle';
+    snap.frequency.setValueAtTime(240, time);
+    snap.frequency.exponentialRampToValueAtTime(90, time + 0.05);
+    snapGain.gain.setValueAtTime(velocity * 0.9, time);
+    snapGain.gain.exponentialRampToValueAtTime(0.001, time + 0.07);
+    snap.connect(snapGain);
+    snapGain.connect(this.masterGain);
+    snap.start(time);
+    snap.stop(time + 0.08);
   }
 
-  public playHiHat(time: number, velocity: number, open: boolean = false) {
-    const bufferSize = this.ctx.sampleRate * (open ? 0.3 : 0.05);
-    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-    const data = buffer.getChannelData(0);
+  public playHiHat(time: number, velocity: number, open = false) {
+    // Metallic: sum of square waves at inharmonic ratios (cymbal recipe)
+    const decay = open ? 0.38 : 0.055;
+    const baseFreq = 800;
+    const ratios = [1.0, 1.275, 1.663, 2.218, 2.645, 3.172];
 
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = Math.random() * 2 - 1;
-    }
+    const merger = this.ctx.createGain();
+    merger.gain.value = 0.1 / ratios.length;
 
-    const source = this.ctx.createBufferSource();
-    source.buffer = buffer;
+    ratios.forEach(r => {
+      const osc = this.ctx.createOscillator();
+      osc.type = 'square';
+      osc.frequency.value = baseFreq * r;
+      osc.connect(merger);
+      osc.start(time);
+      osc.stop(time + decay + 0.01);
+    });
 
-    const filter = this.ctx.createBiquadFilter();
-    filter.type = 'highpass';
-    filter.frequency.value = 7000;
+    const hpf = this.ctx.createBiquadFilter();
+    hpf.type = 'highpass';
+    hpf.frequency.value = 6800;
 
     const gain = this.ctx.createGain();
-    gain.gain.setValueAtTime(velocity * 0.3, time);
-    gain.gain.exponentialRampToValueAtTime(0.01, time + (open ? 0.3 : 0.05));
+    gain.gain.setValueAtTime(velocity * 0.7, time);
+    gain.gain.exponentialRampToValueAtTime(0.001, time + decay);
 
-    source.connect(filter);
-    filter.connect(gain);
+    merger.connect(hpf);
+    hpf.connect(gain);
     gain.connect(this.masterGain);
-
-    source.start(time);
-    source.stop(time + (open ? 0.3 : 0.05));
   }
 
-  public getPattern(style: MusicStyle, step: number): { kick: number; snare: number; hihat: number } {
-    const patterns: Record<MusicStyle, { kick: number[]; snare: number[]; hihat: number[] }> = {
-      EDM: {
-        kick: [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
-        snare: [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-        hihat: [0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0],
-      },
-      HipHop: {
-        kick: [1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0],
-        snare: [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-        hihat: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-      },
-      Jazz: {
-        kick: [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
-        snare: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        hihat: [1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1],
-      },
-      African: {
-        kick: [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1],
-        snare: [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0],
-        hihat: [1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1],
-      },
-      Indian: {
-        kick: [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
-        snare: [0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1],
-        hihat: [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0],
-      },
-    };
+  // Returns velocity for each drum voice; 0 = silent.
+  // Entropy: Euclidean pattern sets probability; chaos adds ghost notes and drops.
+  public getPattern(
+    style: MusicStyle,
+    step: number,
+    chaos: number,
+  ): { kick: number; snare: number; hihat: number } {
+    const base = RHYTHMS[style];
+    const s = step % 16;
 
-    const p = patterns[style];
+    const kickProb  = base.kick[s]  ? 1 - chaos * 0.22 : chaos * 0.07;
+    const snareProb = base.snare[s] ? 1 - chaos * 0.18 : chaos * 0.04;
+    const hihatProb = base.hihat[s] ? 1 - chaos * 0.28 : chaos * 0.12;
+
     return {
-      kick: p.kick[step],
-      snare: p.snare[step],
-      hihat: p.hihat[step],
+      kick:  Math.random() < kickProb  ? 0.75 + Math.random() * 0.25 : 0,
+      snare: Math.random() < snareProb ? 0.75 + Math.random() * 0.25 : 0,
+      hihat: Math.random() < hihatProb ? 0.40 + Math.random() * 0.30 : 0,
     };
   }
 }

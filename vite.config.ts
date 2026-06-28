@@ -12,6 +12,17 @@ export default defineConfig(({mode}) => {
       'process.env.VITE_SUPABASE_URL': JSON.stringify(env.VITE_SUPABASE_URL),
       'process.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(env.VITE_SUPABASE_ANON_KEY),
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            three:    ['three'],
+            recharts: ['recharts'],
+            react:    ['react', 'react-dom'],
+          },
+        },
+      },
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
