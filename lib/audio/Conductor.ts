@@ -7,6 +7,7 @@ export class Conductor {
   private nextNoteTime = 0.0;
   private current16thNote = 0;
   private timerID: number | null = null;
+  private running = false;
   private state: BandState;
   private onBeat: (step: number, time: number) => void;
 
@@ -17,7 +18,8 @@ export class Conductor {
   }
 
   public start() {
-    if (this.state.isPlaying) return;
+    if (this.running) return;
+    this.running = true;
     this.nextNoteTime = this.ctx.currentTime + 0.05;
     this.current16thNote = 0;
     this.scheduler();
@@ -28,6 +30,7 @@ export class Conductor {
       window.clearTimeout(this.timerID);
       this.timerID = null;
     }
+    this.running = false;
   }
 
   private scheduler() {
@@ -42,7 +45,7 @@ export class Conductor {
     const secondsPerBeat = 60.0 / this.state.bpm;
     const stepDuration = 0.25 * secondsPerBeat;
 
-    // Apply swing to even-numbered 16th notes
+    // Apply swing to odd-numbered 16th notes
     let swingOffset = 0;
     if (this.current16thNote % 2 !== 0) {
       swingOffset = (this.state.swing / 100) * stepDuration * 0.33;

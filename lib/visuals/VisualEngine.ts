@@ -19,8 +19,9 @@ export class VisualEngine {
   }
 
   private resize() {
-    this.width = this.canvas.width = window.innerWidth;
-    this.height = this.canvas.height = window.innerHeight;
+    const parent = this.canvas.parentElement;
+    this.width = this.canvas.width = parent ? parent.clientWidth : window.innerWidth;
+    this.height = this.canvas.height = parent ? parent.clientHeight : window.innerHeight;
   }
 
   public addPulse(color: string = '#22d3ee') {
@@ -41,11 +42,9 @@ export class VisualEngine {
   }
 
   private render = () => {
-    // Background with trail effect
     this.ctx.fillStyle = `rgba(5, 8, 16, ${0.1 + this.state.chaos * 0.2})`;
     this.ctx.fillRect(0, 0, this.width, this.height);
 
-    // Draw pulses
     this.pulses.forEach((p, i) => {
       this.ctx.beginPath();
       this.ctx.arc(this.width / 2, this.height / 2, p.radius, 0, Math.PI * 2);
@@ -58,7 +57,6 @@ export class VisualEngine {
       if (p.alpha <= 0) this.pulses.splice(i, 1);
     });
 
-    // Draw particles
     this.particles.forEach((p, i) => {
       this.ctx.beginPath();
       this.ctx.arc(p.x, p.y, 2, 0, Math.PI * 2);
@@ -71,10 +69,8 @@ export class VisualEngine {
       if (p.life <= 0) this.particles.splice(i, 1);
     });
 
-    // Reset alpha
     this.ctx.globalAlpha = 1;
 
-    // Glitch effect if chaos is high
     if (this.state.chaos > 0.6 && Math.random() > 0.9) {
       this.applyGlitch();
     }

@@ -24,8 +24,10 @@ export class BandEngine {
   }
 
   public playBass(time: number, state: BandState, step: number) {
-    // Bass usually plays on 1 and 3, or follows the kick
+    // Base probability from density (0.1–0.9), restricted to beat positions unless chaos opens it up
+    const densityProb = 0.1 + (state.density / 100) * 0.8;
     if (step % 4 !== 0 && Math.random() > state.chaos) return;
+    if (Math.random() > densityProb) return;
 
     const scale = this.getScaleNotes(state.scale);
     const root = 36; // C2
@@ -48,9 +50,10 @@ export class BandEngine {
     osc.stop(time + 0.5);
   }
 
-  public playLead(time: number, state: BandState, step: number) {
-    // Lead is more sparse and chaotic
-    if (Math.random() > (state.chaos * 0.5 + 0.1)) return;
+  public playLead(time: number, state: BandState, _step: number) {
+    // Density scales the base play probability; chaos adds extra spread
+    const densityProb = (state.density / 100) * 0.5 + state.chaos * 0.3;
+    if (Math.random() > densityProb) return;
 
     const scale = this.getScaleNotes(state.scale);
     const root = 60; // C4
@@ -63,7 +66,6 @@ export class BandEngine {
     osc.type = 'sawtooth';
     osc.frequency.setValueAtTime(freq, time);
 
-    // Add some vibrato if chaos is high
     if (state.chaos > 0.5) {
       const lfo = this.ctx.createOscillator();
       const lfoGain = this.ctx.createGain();
