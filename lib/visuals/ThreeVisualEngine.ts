@@ -17,11 +17,11 @@ const STYLE_COLORS: Record<MusicStyle, number> = {
 const BG_VERT = `void main() { gl_Position = vec4(position, 1.0); }`;
 
 const BG_FRAG = `
-  uniform vec2 resolution;
-  uniform vec3 genreColor;
+  uniform vec2  resolution;
+  uniform vec3  genreColor;
   uniform float beat;
 
-  // Minimal HSV → RGB (no branching, GLSL-safe)
+  // HSV → RGB (no conditionals, GLSL-safe)
   vec3 hsv2rgb(float h) {
     vec3 p = abs(fract(vec3(h) + vec3(1.0, 2.0/3.0, 1.0/3.0)) * 6.0 - 3.0);
     return clamp(p - 1.0, 0.0, 1.0);
@@ -30,20 +30,19 @@ const BG_FRAG = `
   void main() {
     vec2 uv = gl_FragCoord.xy / resolution;
 
-    // ── Thin rainbow (as thin as possible) ──────────────────────────────────
-    float bandCenter = 0.5;
-    float bandH      = 0.004;                       // ~4 px on 1080 p
-    float dist       = abs(uv.y - bandCenter);
-    float inBand     = smoothstep(bandH + 0.003, bandH, dist);
-    vec3  rainbow    = hsv2rgb(uv.x);               // full spectrum L→R
+    // ── Discrete horizontal rainbow stripes covering the whole canvas ────────
+    // 2 px per stripe, 12 distinct hues → full cycle repeats every 24 px.
+    // Uses hardware pixel coordinates so stripe thickness is always 2 px.
+    float stripeH   = 2.0;
+    float numHues   = 12.0;
+    float stripeIdx = floor(gl_FragCoord.y / stripeH);
+    float hue       = mod(stripeIdx, numHues) / numHues;
+    vec3  rainbow   = hsv2rgb(hue); // same chroma (S=1, V=1) across all stripes
 
-    // ── Genre colour radial glow ─────────────────────────────────────────────
-    // The ONE colour that bleeds through / overlaps the particle cloud.
-    // Very subtle so the illusion is felt rather than seen directly.
-    float glow = smoothstep(0.58, 0.0, length(uv - vec2(0.5, 0.5))) * 0.11;
-
-    vec3 col = rainbow * inBand + genreColor * glow;
-    col *= 1.0 + beat * 0.6;
+    // ── Genre colour glow — the ONE colour overlapping the particle cloud ────
+    float glow = smoothstep(0.55, 0.02, length(uv - vec2(0.5))) * 0.18;
+    vec3  col  = rainbow * 0.72 + genreColor * glow;
+    col *= 1.0 + beat * 0.55;
 
     gl_FragColor = vec4(col, 1.0);
   }
