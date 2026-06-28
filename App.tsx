@@ -12,6 +12,7 @@ import { DrumEngine } from './lib/audio/DrumEngine';
 import { BandEngine } from './lib/audio/BandEngine';
 import { ThreeVisualEngine } from './lib/visuals/ThreeVisualEngine';
 import { BandState, MusicStyle } from './lib/audio/types';
+import { supabase } from './lib/supabaseClient';
 
 const INITIAL_STATE: BandState = {
   bpm: 128,
@@ -31,6 +32,7 @@ export default function App() {
   const [bootLog, setBootLog] = useState<string[]>([]);
   const [isBooted, setIsBooted] = useState(false);
   const [chartData, setChartData] = useState<ChartPoint[]>([]);
+  const [syncHeight, setSyncHeight] = useState(0);
 
   const audioCtxRef = useRef<AudioContext | null>(null);
   const masterGainRef = useRef<GainNode | null>(null);
@@ -39,6 +41,13 @@ export default function App() {
   const bandEngineRef = useRef<BandEngine | null>(null);
   const visualEngineRef = useRef<ThreeVisualEngine | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const sessionStartRef = useRef<number>(0);
+  const sessionXpRef    = useRef<number>(0);
+
+  useEffect(() => {
+    supabase.from('sessions').select('*', { count: 'exact', head: true })
+      .then(({ count }) => setSyncHeight(count ?? 0));
+  }, []);
 
   useEffect(() => {
     const logs = [
@@ -118,7 +127,22 @@ export default function App() {
     if (!isBooted) { initAudio(); return; }
     if (state.isPlaying) {
       conductorRef.current?.stop();
+      const duration = Math.floor((Date.now() - sessionStartRef.current) / 1000);
+      supabase.from('sessions').insert({
+        style: state.style,
+        scale: state.scale,
+        bpm: state.bpm,
+        swing: state.swing,
+        chaos: Number(state.chaos.toFixed(3)),
+        density: state.density,
+        xp_earned: xp - sessionXpRef.current,
+        duration_seconds: duration,
+      }).then(({ error }) => {
+        if (!error) setSyncHeight(h => h + 1);
+      });
     } else {
+      sessionStartRef.current = Date.now();
+      sessionXpRef.current = xp;
       if (audioCtxRef.current?.state === 'suspended') audioCtxRef.current.resume();
       conductorRef.current?.start();
     }
@@ -296,7 +320,7 @@ export default function App() {
             <div className="text-[9px] text-[#4a5a7a] uppercase tracking-widest mb-2">Chain Log</div>
             <div className="bg-[#050810] border border-[#1a2540] rounded p-2 text-[9px] text-[#4a5a7a] h-32 overflow-hidden flex flex-col gap-1">
               <div className="text-[#22d3ee]">{`> BLOCK_DECODED: ${state.style}_MATTER`}</div>
-              <div>{`> SYNC_HEIGHT: ${Math.floor(xp / 100)}`}</div>
+              <div>{`> SYNC_HEIGHT: ${syncHeight}`}</div>
               <div>{`> ENTROPY_LEVEL: ${state.chaos.toFixed(3)}`}</div>
               <div>{`> HARMONY_LOCK: ${state.scale.toUpperCase()}`}</div>
               <div>{`> PARTICLES: 1400`}</div>
