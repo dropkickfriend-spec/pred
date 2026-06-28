@@ -9,19 +9,20 @@ const SCALE_INTERVALS: Record<string, number[]> = {
 
 // Chord roots per style (semitone offsets from C), cycling every 4 steps
 const PROGRESSIONS: Record<MusicStyle, number[]> = {
-  EDM:    [0, 7, 9, 5],   // I - V - vi - IV
-  HipHop: [0, 3, 7, 5],   // i - bIII - v - IV
-  Jazz:   [2, 7, 0, 0],   // ii - V - I - I
-  African:[0, 5, 3, 7],   // I - IV - III - V modal
-  Indian: [0, 2, 5, 7],   // Sa Re Pa Ni modal
+  EDM:    [0, 7, 9, 5],
+  HipHop: [0, 3, 7, 5],
+  Jazz:   [2, 7, 0, 0],
+  African:[0, 5, 3, 7],
+  Indian: [0, 2, 5, 7],
 };
 
 export class BandEngine {
-  private ctx: AudioContext;
+  private ctx:        AudioContext;
   private masterGain: GainNode;
+  private lastBassMidi = 36; // voice-lead from here each step
 
   constructor(ctx: AudioContext, masterGain: GainNode) {
-    this.ctx = ctx;
+    this.ctx        = ctx;
     this.masterGain = masterGain;
   }
 
@@ -33,14 +34,49 @@ export class BandEngine {
     return PROGRESSIONS[style][Math.floor(step / 4) % 4];
   }
 
+  // Weighted random pick: weight[i] ∝ exp(-distance * k)
+  private voiceLead(candidates: number[], lastMidi: number, baseOctave: number): number {
+    const weights = candidates.map(n => {
+      const midi = baseOctave + n;
+      return Math.exp(-Math.abs(midi - lastMidi) * 0.28);
+    });
+    const sum = weights.reduce((a, b) => a + b, 0);
+    let r = Math.random() * sum;
+    for (let i = 0; i < candidates.length; i++) {
+      r -= weights[i];
+      if (r <= 0) return candidates[i];
+    }
+    return candidates[candidates.length - 1];
+  }
+
   public playBass(time: number, state: BandState, step: number) {
-    // Bass hits on the beat; chaos unlocks off-beat ghost notes
-    if (step % 4 !== 0 && Math.random() > state.chaos * 0.3) return;
-    const prob = 0.3 + (state.density / 100) * 0.6;
+    // Slow-BPM fill: at lower tempos allow off-beat ghost bass notes
+    const slowFill = Math.max(0, (90 - state.bpm) / 90);
+    const offBeatOk = step % 4 !== 0
+      ? Math.random() < (state.chaos * 0.3 + slowFill * 0.25)
+      : true;
+    if (!offBeatOk) return;
+
+    const prob = (0.3 + (state.density / 100) * 0.6) * (1 + slowFill * 0.35);
     if (Math.random() > prob) return;
 
-    const freq = this.midiToFreq(36 + this.chordRoot(state.style, step)); // C2 range
-    const dur = 0.45;
+    const root = this.chordRoot(state.style, step);
+    const nextRoot = this.chordRoot(state.style, step + 4);
+
+    // Neural bass candidates: chord tones + chromatic approach to next root
+    const chordTones = [root, root + 3, root + 5, root + 7];
+    const approach   = nextRoot - 1; // chromatic approach from below
+    const candidates = step % 4 === 3
+      ? [...chordTones, approach]   // approaching next chord — include approach note
+      : chordTones;
+
+    const chosen  = this.voiceLead(candidates, this.lastBassMidi, 36);
+    const octShift = Math.random() < 0.12 ? -12 : 0; // occasional octave drop
+    const midi    = 36 + chosen + octShift;
+    this.lastBassMidi = midi;
+
+    const freq = this.midiToFreq(midi);
+    const dur  = 0.45;
 
     // Two detuned sawtooths → LPF for warmth
     for (const detune of [0, 6]) {
@@ -50,11 +86,11 @@ export class BandEngine {
 
       osc.type = 'sawtooth';
       osc.frequency.value = freq;
-      osc.detune.value = detune;
+      osc.detune.value    = detune;
 
-      filter.type = 'lowpass';
+      filter.type           = 'lowpass';
       filter.frequency.value = 380 + state.chaos * 900;
-      filter.Q.value = 1.6;
+      filter.Q.value        = 1.6;
 
       gain.gain.setValueAtTime(0.42, time);
       gain.gain.exponentialRampToValueAtTime(0.001, time + dur);
@@ -68,23 +104,27 @@ export class BandEngine {
   }
 
   public playLead(time: number, state: BandState, step: number) {
-    const prob = (state.density / 100) * 0.55 + state.chaos * 0.25;
+    const slowFill  = Math.max(0, (90 - state.bpm) / 90);
+    // At slow BPMs fill more subdivisions; chaos also opens them up
+    const prob = (state.density / 100) * 0.55 + state.chaos * 0.25 + slowFill * 0.3;
     if (Math.random() > prob) return;
 
-    const root   = this.chordRoot(state.style, step);
-    // 70% chance chord tone, 30% scale walk
+    const root  = this.chordRoot(state.style, step);
+    const tones = [root, root + 3, root + 7];
+
     let semitone: number;
-    if (Math.random() < 0.7) {
-      const tones = [root, root + 3, root + 7]; // root / minor-3rd / 5th
+    if (Math.random() < 0.68) {
       semitone = tones[Math.floor(Math.random() * tones.length)];
     } else {
       const scale = SCALE_INTERVALS[state.scale] ?? SCALE_INTERVALS.pentatonic;
-      semitone = scale[Math.floor(Math.random() * scale.length)];
+      semitone    = scale[Math.floor(Math.random() * scale.length)];
     }
 
-    const octaveBase = Math.random() < 0.25 ? 72 : 60; // C5 or C4
-    const freq = this.midiToFreq(octaveBase + semitone);
-    const dur  = 0.1 + Math.random() * 0.22;
+    // At slow BPMs, occasionally play a longer note phrase (double duration)
+    const octaveBase = Math.random() < 0.25 ? 72 : 60;
+    const freq  = this.midiToFreq(octaveBase + semitone);
+    const durMult = (slowFill > 0.4 && Math.random() < 0.3) ? 1.8 : 1.0;
+    const dur   = (0.1 + Math.random() * 0.22) * durMult;
 
     // Two detuned sawtooths → bandpass for presence
     for (const detune of [-7, 7]) {
@@ -94,11 +134,11 @@ export class BandEngine {
 
       osc.type = 'sawtooth';
       osc.frequency.value = freq;
-      osc.detune.value = detune;
+      osc.detune.value    = detune;
 
-      filter.type = 'bandpass';
+      filter.type           = 'bandpass';
       filter.frequency.value = 1100 + state.chaos * 2200;
-      filter.Q.value = 2.2;
+      filter.Q.value        = 2.2;
 
       if (state.chaos > 0.5) {
         const lfo     = this.ctx.createOscillator();

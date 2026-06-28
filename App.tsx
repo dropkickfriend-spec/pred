@@ -105,15 +105,15 @@ export default function App() {
 
       if (pattern.kick) {
         drumEngine.playKick(t, pattern.kick);
-        visualEngineRef.current?.addPulse('#ef4444');
+        visualEngineRef.current?.addPulse('kick', '#ef4444');
       }
       if (pattern.snare) {
         drumEngine.playSnare(t, pattern.snare);
-        visualEngineRef.current?.addPulse('#f59e0b');
+        visualEngineRef.current?.addPulse('snare', '#f59e0b');
       }
       if (pattern.hihat) {
         drumEngine.playHiHat(t, pattern.hihat, step % 8 === 7);
-        visualEngineRef.current?.addPulse('#22d3ee');
+        visualEngineRef.current?.addPulse('hihat', '#22d3ee');
       }
 
       bandEngine.playBass(t, s, step);
